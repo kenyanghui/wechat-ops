@@ -1,6 +1,6 @@
 # skill 建设与维护工作流(ops-workflow)
 
-> 本仓库自身的维护纪律,方法论源:[octopus-workflow](https://eightarms.net/Octopus/octopus-workflow)
+> 本仓库自身的维护纪律,方法论源:Loong Workflow
 > (provider-neutral corpus + drift guards),经实战校准。适用于本仓库以及你按本模式自建的一切 skill。
 
 ## 铁律:没有失败基线,就没有行为塑造型 skill
