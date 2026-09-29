@@ -22,3 +22,15 @@ macOS 视觉自动化技能初版:vision.py + 单文件 SKILL.md(坐标绝不落
 - agent.py: 消息合并去抖(merge_wait)、AI时间感知(当前时间注入prompt)、心跳时间持久化(重启不重发)、修复 Python3 推导式变量泄漏导致的红点状态复位崩溃
 - pitfalls-linux.md: 第19条(发文件需先聚焦输入区,否则 Send 点击被吞)
 - config-template: 新增 merge_wait
+
+## v0.3.0 (2026-09-29) — 迭代1
+
+学自同类项目(设计借鉴,无代码复制)落地五项:
+
+- **每会话独立 Prompt**:config.personas 按会话名覆盖默认人设(#4)
+- **聊天记忆**:memory/<会话>.md 落盘,最近40行注入 prompt,每10次交互 GLM 压缩摘要(#5)
+- **群 @ 检测**:群会话仅被 @ self_nick 时响应,否则仅记录(#6)
+- **链接阅读**:检测对方消息 URL→抓正文(3000字)→结合内容回复,失败降级(#8)
+- **FT 图标模板匹配**:颜色候选+9x9 模板最小距离择优,核验成功后自学习模板(#2,待实测关闭)
+
+其他:config 新增 self_nick/personas/merge_wait;send 前消息合并去抖;AI 时间感知;心跳持久化防重启重发;Python3 推导式崩溃修复(红点状态复位)。
