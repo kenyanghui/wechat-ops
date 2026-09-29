@@ -5,7 +5,7 @@
 无 API key 时自动降级为 observe。触摸 /opt/wechat-agent/PAUSE 可暂停。
 """
 import json, os, sys, time, base64, logging, subprocess, re
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -373,7 +373,7 @@ def ima_kb_id():
     return ""
 
 def _keywords(query):
-    """中文分词提关键词(jieba 优先,无则退英文正则),过滤虚词,最多4个"""
+    """中文分词提关键词(jieba 优先),过滤虚词,按词长降序(信息量大的优先),最多6个"""
     words = []
     try:
         import jieba
@@ -381,12 +381,23 @@ def _keywords(query):
         words = [w for w in jieba.lcut(query) if len(w) >= 2]
     except Exception:
         words = re.findall(r"[A-Za-z0-9]{2,}", query)
-    stop = {"怎么办", "怎么", "什么", "为什么", "可以", "应该", "如何", "一下", "看看", "介绍", "需要", "还是"}
-    out, seen = [], set()
-    for w in words:
-        if w not in stop and w not in seen:
+    stop = {"怎么办", "怎么", "什么", "为什么", "可以", "应该", "如何", "一下", "看看",
+            "介绍", "需要", "还是", "能把", "告诉", "我们", "你们", "知道", "出来",
+            "相关", "信息", "没有", "这个", "那个", "时候", "开始", "内容", "资料",
+            "文章", "重点", "整理"}
+    seen, out = set(), []
+    for w in sorted(set(words) - stop, key=len, reverse=True):
+        if w not in seen:
+            seen.add(w)
             out.append(w)
-    return out[:4]
+    # 中文前缀候选:长词的前两字也作为关键词(「四会开」→「四会」,专名常见形态)
+    for w in list(out):
+        if len(w) >= 3 and re.match(r"^[\u4e00-\u9fff]{2}", w):
+            pre = w[:2]
+            if pre not in seen:
+                seen.add(pre)
+                out.append(pre)
+    return out[:6]
 
 def ima_search(query):
     """ima 开放平台 search_knowledge。长问题分词分别查,合并去重;
@@ -404,7 +415,7 @@ def ima_search(query):
     out, seen = [], set()
     try:
         import requests
-        for q in queries[:4]:                    # 控延迟:最多4次查询
+        for q in queries[:6]:                    # 控延迟:最多6次查询
             r = requests.post("https://ima.qq.com/openapi/wiki/v1/search_knowledge",
                               headers=_ima_headers(),
                               json={"query": q, "cursor": "", "knowledge_base_id": kb_id},
@@ -525,6 +536,107 @@ def in_quiet_hours():
     return h >= a or h < b
 
 RATE = {"hour": None, "count": 0}
+SCHED_FILE = os.path.join(BASE, "scheduled.json")
+
+def load_tasks():
+    try:
+        return json.load(open(SCHED_FILE, encoding="utf-8"))
+    except Exception as e:
+        if os.path.exists(SCHED_FILE):
+            log.warning("load_tasks 解析失败: %s (内容前80字节: %r)" % (
+                e, open(SCHED_FILE, "rb").read(80)))
+        return []
+
+def save_tasks(tasks):
+    json.dump(tasks, open(SCHED_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+def remove_task(task):
+    """手术式移除已发送的任务(按 run_at+message+chat 精确匹配),保留其他任务"""
+    try:
+        kept = [x for x in load_tasks()
+                if not (x.get("run_at") == task.get("run_at")
+                        and x.get("message") == task.get("message")
+                        and x.get("chat") == task.get("chat"))]
+        save_tasks(kept)
+    except Exception:
+        log.warning("任务移除失败", exc_info=True)
+
+def run_due_tasks():
+    """到期定时任务经核验路径发送(学自 WXAUTO_SE 定时任务);daily 自动顺延。
+    发送成功后手术式移除该条;失败重排队(+2分钟,3次放弃)。
+    ⚠️ 需 config scheduled_enabled=true;实测曾出现重复触发循环,修复前保持关闭。"""
+    if not CFG.get("scheduled_enabled"):
+        return
+    now = datetime.now()
+    tasks = load_tasks()
+    if not tasks:
+        return
+    changed = False
+    fired = 0
+    for t in tasks:
+        try:
+            run_at = datetime.strptime(t["run_at"], "%Y-%m-%d %H:%M")
+        except Exception:
+            continue
+        if now < run_at:
+            continue
+        chat, msg = t.get("chat", ""), t.get("message", "")
+        log.info("定时任务触发: %s -> %s" % (chat, msg[:30]))
+        sent = False
+        try:
+            ensure_window()
+            if open_chat_from_list(chat) or open_chat_via_search(chat):
+                send_text(msg)
+                log_inbox("定时任务已发送 %s: %s" % (chat, msg[:40]))
+                sent = True
+                fired += 1
+        except Exception:
+            log.exception("定时任务发送失败")
+        if sent:
+            if t.get("repeat") == "daily":
+                t["run_at"] = (run_at + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+                changed = True
+            else:
+                remove_task(t)
+                changed = True
+        else:
+            t["attempts"] = t.get("attempts", 0) + 1
+            if t["attempts"] >= 3:
+                log_inbox("定时任务连续3次失败已放弃: %s -> %s" % (chat, msg[:30]))
+                remove_task(t)
+                changed = True
+            else:
+                t["run_at"] = (now + timedelta(minutes=2)).strftime("%Y-%m-%d %H:%M")
+                changed = True
+    if changed:
+        ensure_window()
+        save_tasks(load_tasks())                 # 重读后保存,合并并发改动
+
+def maybe_schedule(text, chat):
+    """白名单消息含定时意图时 GLM 抽取结构化任务(学自 WXAUTO_SE);返回确认语或 None"""
+    if not re.search(r"\d+\s*分钟|\d+\s*小时|每天.*点|明天.*点|提醒我", text):
+        return None
+    prompt = ("从这条微信消息抽取定时任务。只输出JSON:"
+              '{"has": true/false, "run_at": "YYYY-MM-DD HH:MM", "message": "提醒内容", "repeat": "none或daily"}。'
+              "没有定时意图则 has=false。当前时间: %s。消息: %s"
+              % (datetime.now().strftime("%Y-%m-%d %H:%M"), text[:200]))
+    try:
+        m = re.search(r"\{[^{}]*\}", think(prompt), re.S)
+        if not m:
+            return None
+        d = json.loads(m.group(0))
+        if not d.get("has") or not d.get("run_at"):
+            return None
+        tasks = load_tasks()
+        tasks.append({"run_at": d["run_at"], "chat": chat,
+                      "message": d.get("message", ""), "repeat": d.get("repeat", "none")})
+        save_tasks(tasks)
+        log.info("定时任务已登记: %s %s" % (d["run_at"], d.get("message", "")[:30]))
+        return "好的，已定好：%s（%s）" % (d.get("message", "")[:30], d["run_at"])
+    except Exception:
+        log.warning("定时任务抽取失败", exc_info=True)
+        return None
+
 def group_needs_reply(chat_name, messages):
     """群聊仅在被 @ 本号昵称时响应(学自 WXAUTO_SE)。群标题带成员数括号;
     未配置 self_nick 或非群会话保持原行为。"""
@@ -582,6 +694,13 @@ def handle_trigger(slots, img):
             continue
         if not group_needs_reply(info.get("chat_name"), info.get("messages", [])):
             log.info("群内未被@本号,跳过: %s" % info.get("chat_name"))
+            continue
+        last_them = next((m["text"] for m in reversed(info.get("messages", []))
+                          if m["from"] == "them"), "")
+        sched = maybe_schedule(last_them, info.get("chat_name") or "")
+        if sched:
+            send_text(sched)
+            log_inbox("定时任务已设定: %s" % sched)
             continue
         if not rate_ok():
             log.warning("超时速率限制,跳过回复 %s" % name)
@@ -649,12 +768,19 @@ def find_green_icon_y(img):
             ref_data = list(ref.getdata())
             best, best_d = None, None
             for y in cands:
-                patch = img.crop((74, y, 110, y + 36)).convert("RGB").resize((9, 9))
-                d = sum((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2
-                        for a, b in zip(patch.getdata(), ref_data))
-                if best_d is None or d < best_d:
-                    best, best_d = y, d
-            log.info("FT 图标候选 %s,模板择优取 y=%s (距离%s)" % (cands, best, best_d))
+                for dy in (0, -2, 2):                # 容忍1-2px行偏移
+                    yy = y + dy
+                    if yy < c["list_y0"] or yy + 36 > 870:
+                        continue
+                    patch = img.crop((74, yy, 110, yy + 36)).convert("RGB").resize((9, 9))
+                    d = sum((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2
+                            for a, b in zip(patch.getdata(), ref_data))
+                    if best_d is None or d < best_d:
+                        best, best_d = yy, d
+            if best_d is None or best_d > 100000:    # 校准:真身<10万(含微移),误配270万+
+                log.warning("FT 模板匹配距离过大(%s),疑似列表异常,跳过" % best_d)
+                return None
+            log.info("FT 图标模板匹配: 候选%s 取 y=%s (距离%s)" % (cands[:5], best, best_d))
             return best + 18
         except Exception:
             log.warning("模板匹配异常,回退颜色规则", exc_info=True)
@@ -718,7 +844,8 @@ def heartbeat():
         return
     try:
         if click_y_top is not None:
-            save_ft_template(scrot(), click_y_top)   # 核验成功,自学习参考模板
+            # 必须用点击前的那张 img:点击后列表会重排(FT 跳到顶部),旧坐标处已不是 FT
+            save_ft_template(img, click_y_top)
     except Exception:
         pass
     free = sh("free -m | awk '/Mem:/{print $7}'").stdout.decode().strip()
@@ -760,6 +887,7 @@ def main():
             elif prev is None:
                 prev = cur
             heartbeat()                              # 内部按 last_hb 文件到期判定,重启不重发
+            run_due_tasks()                          # 定时任务到期即发
         except Exception:
             log.exception("循环异常")
             time.sleep(5)
