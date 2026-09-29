@@ -45,3 +45,9 @@ macOS 视觉自动化技能初版:vision.py + 单文件 SKILL.md(坐标绝不落
 - **ima 知识库 OpenAPI 直连**(替代手动导出):双头认证(ima-openapi-clientid/apikey)、search_knowledge_base 解析知识库 ID(兼容实际返回 kb_id/kb_name 字段)、jieba 分词拆词搜索、get_media_info 取原文(编码探测防乱码)、文件检索兜底
 - 凭证仅存服务器 config(600),仓库模板留空
 - 群助人设升级为「AI教育杨老师」AI知识助教,kb_chats 控制生效范围
+
+## v0.4.1 (2026-09-29)
+
+- N-03 完成:6080 安全直连上线(nginx TLS+BasicAuth 反代,自签证书,htpasswd 哈希),公网实测 401/200 正常,明文 400 拒绝
+- websockify 迁移至 127.0.0.1:6081,6080 公网面由 nginx 接管
+- linux-server.md 补充安全直连部署说明
