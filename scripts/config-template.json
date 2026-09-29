@@ -1,6 +1,7 @@
 {
   "display": ":1",
   "poll_interval": 8,
+  "merge_wait": 8,
   "mode": "draft",
   "whitelist": [
     "联系人A",

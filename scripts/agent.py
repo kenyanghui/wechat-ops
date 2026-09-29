@@ -296,7 +296,8 @@ def compose_reply(info):
     history = "\n".join(("对方: " if m["from"] == "them" else "我: ") + m["text"]
                         for m in info["messages"])
     prompt = (CFG["persona"] +
-              "\n\n当前聊天对象: " + info.get("chat_name", "未知") +
+              "\n\n当前时间: " + datetime.now().strftime("%Y-%m-%d %H:%M %A") +   # AI时间感知(学自 WXAUTO_SE)
+              "\n当前聊天对象: " + info.get("chat_name", "未知") +
               "\n最近对话:\n" + history +
               "\n\n请以「我」的身份回复对方最后一条消息。只输出回复正文,不要任何解释、引号或表情符号堆砌。")
     reply = think(prompt).strip().strip('"')
@@ -345,6 +346,8 @@ def handle_trigger(slots, img):
         if not brain_ready():
             log.info("观察模式,无大脑,不操作: %s" % name)
             continue
+        # 消息合并去抖(学自 WXAUTO_SE):等突发的一串消息到齐再读,避免逐条回复
+        time.sleep(CFG.get("merge_wait", 8))
         y = c["slot_y0"] + s * c["slot_dy"]
         click(c["slot_click_x"], y, 1.5)          # 点开该会话
         info = read_conversation()
@@ -431,6 +434,14 @@ def heartbeat():
     hb = CFG.get("heartbeat_chat")
     if not hb or not brain_ready():
         return                                   # 没有大脑时无法核验目标,不发,防误发
+    hb_file = os.path.join(BASE, "last_hb")
+    try:
+        since = time.time() - os.path.getmtime(hb_file)
+    except OSError:
+        since = CFG["heartbeat_interval_min"] * 60
+    if since < CFG["heartbeat_interval_min"] * 60 - 120:
+        return                                   # 未到期。上次心跳时间持久化到文件,
+                                                 # 服务重启不再重发(实测重启曾连发3条骚扰)
     if not ensure_window():
         return
     img = scrot()
@@ -450,6 +461,7 @@ def heartbeat():
         return
     free = sh("free -m | awk '/Mem:/{print $7}'").stdout.decode().strip()
     send_text("〔自动心跳〕Agent在线 ✓ 可用内存%sMB 时间%s" % (free, datetime.now().strftime("%m-%d %H:%M")))
+    open(hb_file, "w").write(datetime.now().isoformat())
     log.info("心跳已发")
 
 # ---------------- 主循环 ----------------
@@ -457,7 +469,6 @@ def main():
     ensure_window()
     prev = None
     red_state = {}
-    last_hb = time.time() - CFG["heartbeat_interval_min"] * 60 + 90  # 启动90秒后先发一次心跳
     log.info("Agent启动 mode=%s brain=%s" % (CFG["mode"], "GLM" if brain_ready() else "无(观察)"))
     while True:
         try:
@@ -486,9 +497,7 @@ def main():
                 prev = cur
             elif prev is None:
                 prev = cur
-            if time.time() - last_hb > CFG["heartbeat_interval_min"] * 60:
-                heartbeat()
-                last_hb = time.time()
+            heartbeat()                              # 内部按 last_hb 文件到期判定,重启不重发
         except Exception:
             log.exception("循环异常")
             time.sleep(5)

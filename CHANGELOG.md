@@ -16,3 +16,9 @@
 ## v0.1.x (历史)
 
 macOS 视觉自动化技能初版:vision.py + 单文件 SKILL.md(坐标绝不落盘、每步验证、朋友圈发布全流程案例)。
+
+## v0.2.1 (2026-09-29)
+
+- agent.py: 消息合并去抖(merge_wait)、AI时间感知(当前时间注入prompt)、心跳时间持久化(重启不重发)、修复 Python3 推导式变量泄漏导致的红点状态复位崩溃
+- pitfalls-linux.md: 第19条(发文件需先聚焦输入区,否则 Send 点击被吞)
+- config-template: 新增 merge_wait
