@@ -291,18 +291,112 @@ def send_text(text):
 
 SAFE_ACK = "这条我记下来了,回头我详细答复你"
 DANGER = re.compile(r"转账|红包|密码|验证码|汇款|付款")
+URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+def fetch_url_text(url):
+    """链接阅读(学自 WXAUTO_SE):抓网页正文,失败返回 None 走兜底"""
+    try:
+        import requests
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", r.text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", text)[:3000]
+    except Exception as e:
+        log.warning("链接抓取失败 %s: %s" % (url, e))
+        return None
+
+def memory_file(chat):
+    safe = re.sub(r"[^\w\u4e00-\u9fff-]", "_", chat) or "unknown"
+    return os.path.join(BASE, "memory", safe + ".md")
+
+def memory_context(chat):
+    mf = memory_file(chat)
+    if not os.path.exists(mf):
+        return ""
+    lines = open(mf, encoding="utf-8").readlines()
+    return "".join(lines[-40:])
+
+def remember_exchange(chat, last_them, reply):
+    """对话落记忆文件;每 10 次交互让 GLM 压缩一份摘要(学自 WXAUTO_SE 记忆功能)"""
+    mf = memory_file(chat)
+    os.makedirs(os.path.dirname(mf), exist_ok=True)
+    stamp = datetime.now().strftime("%m-%d %H:%M")
+    with open(mf, "a", encoding="utf-8") as f:
+        f.write("[%s] 对方: %s\n[%s] 我: %s\n" % (
+            stamp, (last_them or "")[:80], stamp, reply[:80].replace("\n", " ")))
+    try:
+        n = sum(1 for _ in open(mf, encoding="utf-8"))
+        if n >= 20 and n % 20 < 2:
+            head = "".join(open(mf, encoding="utf-8").readlines()[-40:])
+            summary = think("把以下微信对话记录压缩成不超过300字的记忆要点(事实/承诺/偏好/待办),直接输出要点:\n" + head)
+            sf = os.path.join(os.path.dirname(mf), "summary-" + os.path.basename(mf))
+            open(sf, "w", encoding="utf-8").write(summary.strip())
+            log.info("记忆摘要已更新: %s" % os.path.basename(sf))
+    except Exception:
+        log.warning("记忆压缩失败", exc_info=True)
+
+KB_DIR = os.path.join(BASE, "kb")
+
+def kb_context(question):
+    """知识库检索(轻量RAG):扫 kb/ 下 md/txt 的段落,按问题关键词重合度取最优段。
+    知识来源是 ima 知识库「AI教育杨老师」的导出文档;MCP 直连见 Loong 工单 #13。"""
+    try:
+        if not os.path.isdir(KB_DIR):
+            return ""
+        q = set(question)
+        best, best_score = [], 0
+        for fn in os.listdir(KB_DIR):
+            if not fn.lower().endswith((".md", ".txt")):
+                continue
+            try:
+                content = open(os.path.join(KB_DIR, fn), encoding="utf-8").read()
+            except Exception:
+                continue
+            for para in re.split(r"\n\s*\n", content):
+                para = para.strip()
+                if len(para) < 30:
+                    continue
+                score = sum(1 for ch in q if ch in para and not ch.isspace())
+                if score > best_score and score >= 3:
+                    best, best_score = ["[%s] %s" % (fn, para[:600])], score
+                elif score == best_score and score >= 3 and len(best) < 3:
+                    best.append("[%s] %s" % (fn, para[:600]))
+        return ("\n\n".join(best))[:2500] if best else ""
+    except Exception:
+        log.warning("知识库检索失败", exc_info=True)
+        return ""
 
 def compose_reply(info):
+    chat = info.get("chat_name", "未知")
+    last_them = next((m["text"] for m in reversed(info.get("messages", []))
+                      if m["from"] == "them"), "")
     history = "\n".join(("对方: " if m["from"] == "them" else "我: ") + m["text"]
                         for m in info["messages"])
-    prompt = (CFG["persona"] +
+    persona = CFG.get("personas", {}).get(chat, CFG["persona"])   # 每会话独立人设(学自 WXAUTO_SE)
+    memory = memory_context(chat)
+    link_note = ""
+    urls = URL_RE.findall(last_them)
+    if urls:
+        content = fetch_url_text(urls[0])
+        link_note = ("\n对方消息含链接 %s,网页正文如下:\n%s\n请结合网页内容回复。" % (urls[0], content)
+                     if content else
+                     "\n对方消息含链接 %s(抓取失败,可建议对方粘贴正文)。" % urls[0])
+    prompt = (persona +
               "\n\n当前时间: " + datetime.now().strftime("%Y-%m-%d %H:%M %A") +   # AI时间感知(学自 WXAUTO_SE)
-              "\n当前聊天对象: " + info.get("chat_name", "未知") +
+              "\n当前聊天对象: " + chat +
+              (("\n相关历史记忆:\n" + memory) if memory else "") +
+              link_note +
               "\n最近对话:\n" + history +
               "\n\n请以「我」的身份回复对方最后一条消息。只输出回复正文,不要任何解释、引号或表情符号堆砌。")
+    if chat in CFG.get("kb_chats", []):
+        kb = kb_context(last_them or history[-200:])
+        if kb:
+            prompt += "\n\n知识库参考(「AI教育杨老师」知识库,回答以下列内容为准,没有的如实说需要查证):\n" + kb
     reply = think(prompt).strip().strip('"')
     if DANGER.search(reply):
         return SAFE_ACK
+    remember_exchange(chat, last_them, reply)
     return reply
 
 def in_quiet_hours():
@@ -314,6 +408,17 @@ def in_quiet_hours():
     return h >= a or h < b
 
 RATE = {"hour": None, "count": 0}
+def group_needs_reply(chat_name, messages):
+    """群聊仅在被 @ 本号昵称时响应(学自 WXAUTO_SE)。群标题带成员数括号;
+    未配置 self_nick 或非群会话保持原行为。"""
+    if "(" not in (chat_name or ""):
+        return True
+    nick = CFG.get("self_nick", "")
+    if not nick:
+        return True
+    them = " ".join(m.get("text", "") for m in messages if m.get("from") == "them")
+    return nick in them
+
 def rate_ok():
     h = datetime.now().hour
     if RATE["hour"] != h:
@@ -340,7 +445,7 @@ def handle_trigger(slots, img):
     for s in slots:
         name = slot_map.get(s, "槽位%d" % s)
         log_inbox("新消息 来自 %s" % name)
-        if name not in CFG["whitelist"]:
+        if not any(w and (w in name or name in w) for w in CFG["whitelist"]):
             log.info("跳过非白名单: %s" % name)
             continue
         if not brain_ready():
@@ -357,6 +462,9 @@ def handle_trigger(slots, img):
         if real_name and CFG.get("verify_chat_name", True) and \
            real_name not in name and name not in real_name:
             log.warning("窗口标题(%s)与预期(%s)不符,放弃回复" % (real_name, name))
+            continue
+        if not group_needs_reply(info.get("chat_name"), info.get("messages", [])):
+            log.info("群内未被@本号,跳过: %s" % info.get("chat_name"))
             continue
         if not rate_ok():
             log.warning("超时速率限制,跳过回复 %s" % name)
@@ -386,11 +494,23 @@ def expand_pinned_if_collapsed(img):
         log.warning("检查折叠条失败: %s" % e)
     return False
 
+def _ft_icon_ref():
+    return os.path.join(BASE, "ft_icon_ref.png")
+
+def save_ft_template(img, y_top):
+    """标题核验成功后把该图标存为参考模板(自学习),供后续模板匹配择优"""
+    try:
+        img.crop((74, y_top, 110, y_top + 36)).save(_ft_icon_ref())
+        log.info("FT 图标参考模板已更新")
+    except Exception:
+        log.warning("FT 模板保存失败", exc_info=True)
+
 def find_green_icon_y(img):
-    """聊天列表图标列里找 File Transfer 图标:绿圈+大白箭头双特征,取最底部的匹配"""
+    """聊天列表图标列找 File Transfer 图标。候选=绿圈+白箭头双特征(green>250,white>250);
+    存在参考模板时按 9x9 缩略图最小距离择优(修颜色质量误配,坑#2),无模板取最底部候选。"""
     c = CFG["coords"]
     px = img.load()
-    best = None
+    cands = []
     y_cap = min(c["list_y1"] - 44, 826)          # 避开底部 pinned chats 开关区
     for y in range(c["list_y0"], y_cap, 2):
         green = white = 0
@@ -402,8 +522,26 @@ def find_green_icon_y(img):
                 elif r > 220 and g > 220 and b > 220:
                     white += 1
         if green > 250 and white > 250:
-            best = y + 18
-    return best
+            cands.append(y)
+    if not cands:
+        return None
+    ref_path = _ft_icon_ref()
+    if os.path.exists(ref_path):
+        try:
+            ref = Image.open(ref_path).convert("RGB").resize((9, 9))
+            ref_data = list(ref.getdata())
+            best, best_d = None, None
+            for y in cands:
+                patch = img.crop((74, y, 110, y + 36)).convert("RGB").resize((9, 9))
+                d = sum((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2
+                        for a, b in zip(patch.getdata(), ref_data))
+                if best_d is None or d < best_d:
+                    best, best_d = y, d
+            log.info("FT 图标候选 %s,模板择优取 y=%s (距离%s)" % (cands, best, best_d))
+            return best + 18
+        except Exception:
+            log.warning("模板匹配异常,回退颜色规则", exc_info=True)
+    return cands[-1] + 18
 
 def open_chat_from_list(name):
     """在聊天列表里用视觉找到目标会话并点开(适用于搜索索引搜不到的内置会话如 File Transfer)"""
@@ -453,12 +591,19 @@ def heartbeat():
             log.warning("未找到 File Transfer 绿色图标,跳过心跳")
             return
         click(91, gy, 2.0)                       # 点图标中心,避开下方折叠开关
+        click_y_top = gy - 18
     elif not (open_chat_from_list(hb) or open_chat_via_search(hb)):
+        click_y_top = None
         return
     header = chat_header_name()
     if hb.lower() not in header.lower():
         log.warning("心跳目标核验失败(标题:%s),不发送" % header)
         return
+    try:
+        if click_y_top is not None:
+            save_ft_template(scrot(), click_y_top)   # 核验成功,自学习参考模板
+    except Exception:
+        pass
     free = sh("free -m | awk '/Mem:/{print $7}'").stdout.decode().strip()
     send_text("〔自动心跳〕Agent在线 ✓ 可用内存%sMB 时间%s" % (free, datetime.now().strftime("%m-%d %H:%M")))
     open(hb_file, "w").write(datetime.now().isoformat())

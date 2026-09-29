@@ -7,6 +7,8 @@
     "联系人A",
     "File Transfer"
   ],
+  "self_nick": "",
+  "personas": {},
   "verify_chat_name": true,
   "max_replies_per_hour": 10,
   "quiet_hours": [
