@@ -1,0 +1,49 @@
+{
+  "display": ":1",
+  "poll_interval": 8,
+  "mode": "draft",
+  "whitelist": [
+    "联系人A",
+    "File Transfer"
+  ],
+  "verify_chat_name": true,
+  "max_replies_per_hour": 10,
+  "quiet_hours": [
+    23,
+    7
+  ],
+  "heartbeat_chat": "File Transfer",
+  "heartbeat_interval_min": 360,
+  "slot_count": 11,
+  "red_threshold": 55,
+  "coords": {
+    "search_box": [
+      159,
+      84
+    ],
+    "search_first_result": [
+      200,
+      175
+    ],
+    "slot_y0": 137,
+    "slot_dy": 69,
+    "slot_click_x": 190,
+    "badge_x0": 96,
+    "badge_x1": 120,
+    "list_x0": 60,
+    "list_y0": 60,
+    "list_x1": 300,
+    "list_y1": 900,
+    "input_box": [
+      870,
+      800
+    ]
+  },
+  "api": {
+    "base": "https://open.bigmodel.cn/api/paas/v4",
+    "key": "",
+    "vision_model": "glm-4v-flash",
+    "text_model": "glm-4.5-flash"
+  },
+  "persona": "你是微信主人(按实际用户身份填写:职业、说话风格、常用语)的助理,代替他回复消息。风格:口语化、简短、像本人随手打的,1-2句为主,不用排比句和书面腔。涉及承诺时间、转账、隐私信息时只回:这条我记下来了,回头我详细答复你。"
+}

@@ -1,6 +1,6 @@
 # WeChat Ops
 
-用「**截图 → 视觉识别 → 动作 → 截图验证**」的闭环操作 macOS 电脑，代替人手点按钮、输文字、切窗口、走界面流程。
+用「**截图 → 视觉识别 → 动作 → 截图验证**」的闭环操作电脑（macOS 本机路线 + Linux 云服务器常驻 Agent 路线），代替人手点按钮、输文字、切窗口、走界面流程。
 
 适用于 Claude Code、Codex 等支持 skill 的 AI 编程助手。
 
@@ -87,3 +87,10 @@ macOS Retina 屏上，**截图分辨率和点击分辨率不是一回事**：`sc
 ## License
 
 [MIT](LICENSE)
+
+## 维护纪律(skill-ops 工作流)
+
+本仓库按 [references/ops-workflow.md](references/ops-workflow.md) 维护:失败基线优先、
+安全闸门固化进代码、证据分级表述(已验证:证据 / 未验证:待确认)、
+守卫检查(`bash scripts/check-skill.sh .`)、CHANGELOG 版本化。
+改动 scripts/agent.py 时,服务器部署实例必须回填仓库后再发布。

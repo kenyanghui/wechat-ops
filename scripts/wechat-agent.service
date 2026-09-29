@@ -1,0 +1,15 @@
+[Unit]
+Description=WeChat GUI Agent (GLM brain)
+After=tigervncserver@:1.service
+Wants=tigervncserver@:1.service
+
+[Service]
+Environment=DISPLAY=:1
+Environment=HOME=/root
+WorkingDirectory=/opt/wechat-agent
+ExecStart=/usr/bin/python3 /opt/wechat-agent/agent.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
