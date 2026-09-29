@@ -9,6 +9,14 @@
   ],
   "self_nick": "",
   "personas": {},
+  "kb_chats": [],
+  "ima": {
+    "enabled": false,
+    "client_id": "",
+    "api_key": "",
+    "kb_name": "",
+    "kb_id": ""
+  },
   "verify_chat_name": true,
   "max_replies_per_hour": 10,
   "quiet_hours": [

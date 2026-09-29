@@ -39,3 +39,9 @@ macOS 视觉自动化技能初版:vision.py + 单文件 SKILL.md(坐标绝不落
 
 - **知识库接入**: kb/ 目录 + 轻量检索(kb_context 按关键词重合度取段落),群聊按 kb_chats 配置注入「AI教育杨老师」知识库参考;群人设升级为 AI 知识助教
 - ima 知识库 MCP 直连列入升级票(#13)
+
+## v0.3.2 (2026-09-29)
+
+- **ima 知识库 OpenAPI 直连**(替代手动导出):双头认证(ima-openapi-clientid/apikey)、search_knowledge_base 解析知识库 ID(兼容实际返回 kb_id/kb_name 字段)、jieba 分词拆词搜索、get_media_info 取原文(编码探测防乱码)、文件检索兜底
+- 凭证仅存服务器 config(600),仓库模板留空
+- 群助人设升级为「AI教育杨老师」AI知识助教,kb_chats 控制生效范围

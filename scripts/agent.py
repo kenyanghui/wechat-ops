@@ -298,6 +298,8 @@ def fetch_url_text(url):
     try:
         import requests
         r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if not r.encoding or r.encoding.lower() in ("iso-8859-1", "latin-1"):
+            r.encoding = r.apparent_encoding         # 同上,防中文乱码
         r.raise_for_status()
         text = re.sub(r"(?is)<(script|style).*?</\1>", " ", r.text)
         text = re.sub(r"<[^>]+>", " ", text)
@@ -337,6 +339,110 @@ def remember_exchange(chat, last_them, reply):
         log.warning("记忆压缩失败", exc_info=True)
 
 KB_DIR = os.path.join(BASE, "kb")
+
+def _ima_headers():
+    ima = CFG.get("ima", {})
+    return {"ima-openapi-clientid": ima.get("client_id", ""),
+            "ima-openapi-apikey": ima.get("api_key", ""),
+            "Content-Type": "application/json"}
+
+def ima_kb_id():
+    """解析知识库名→ID(内存缓存)。凭证只存服务器 config,不落日志不进仓库。"""
+    ima = CFG.get("ima", {})
+    if ima.get("kb_id"):
+        return ima["kb_id"]
+    if not (ima.get("enabled") and ima.get("client_id") and ima.get("api_key") and ima.get("kb_name")):
+        return ""
+    try:
+        import requests
+        r = requests.post("https://ima.qq.com/openapi/wiki/v1/search_knowledge_base",
+                          headers=_ima_headers(),
+                          json={"query": ima["kb_name"], "cursor": "", "limit": 10}, timeout=15)
+        r.raise_for_status()
+        for kb in (r.json().get("data") or {}).get("info_list") or []:
+            # 实测 API 返回 kb_id/kb_name(文档写 id/name,不一致——兼容两者)
+            name = kb.get("kb_name") or kb.get("name")
+            kid = kb.get("kb_id") or kb.get("id")
+            if name == ima["kb_name"] and kid:
+                ima["kb_id"] = kid
+                log.info("ima 知识库已解析: %s -> %s" % (name, kid))
+                return kid
+        log.warning("ima 未找到知识库: %s" % ima["kb_name"])
+    except Exception as e:
+        log.warning("ima 知识库解析失败: %s" % e)
+    return ""
+
+def _keywords(query):
+    """中文分词提关键词(jieba 优先,无则退英文正则),过滤虚词,最多4个"""
+    words = []
+    try:
+        import jieba
+        jieba.setLogLevel(logging.WARNING)       # 静音 jieba 的建词典 DEBUG 输出
+        words = [w for w in jieba.lcut(query) if len(w) >= 2]
+    except Exception:
+        words = re.findall(r"[A-Za-z0-9]{2,}", query)
+    stop = {"怎么办", "怎么", "什么", "为什么", "可以", "应该", "如何", "一下", "看看", "介绍", "需要", "还是"}
+    out, seen = [], set()
+    for w in words:
+        if w not in stop and w not in seen:
+            out.append(w)
+    return out[:4]
+
+def ima_search(query):
+    """ima 开放平台 search_knowledge。长问题分词分别查,合并去重;
+    返回 [{title, highlight, media_id}, ...] 最多6条。"""
+    kb_id = ima_kb_id()
+    if not kb_id:
+        return []
+    queries, seen_q = [], set()
+    first = query.strip()[:20]
+    if first:
+        queries.append(first)
+    for t in _keywords(query):
+        if t not in seen_q:
+            queries.append(t)
+    out, seen = [], set()
+    try:
+        import requests
+        for q in queries[:4]:                    # 控延迟:最多4次查询
+            r = requests.post("https://ima.qq.com/openapi/wiki/v1/search_knowledge",
+                              headers=_ima_headers(),
+                              json={"query": q, "cursor": "", "knowledge_base_id": kb_id},
+                              timeout=15)
+            r.raise_for_status()
+            for x in ((r.json() or {}).get("data") or {}).get("info_list") or []:
+                key = x.get("media_id") or x.get("title")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append({"title": x.get("title", ""),
+                            "highlight": x.get("highlight_content", ""),
+                            "media_id": x.get("media_id", "")})
+            if len(out) >= 6:
+                break
+    except Exception as e:
+        log.warning("ima 搜索失败: %s" % e)
+    return out[:6]
+
+def ima_media_text(media_id):
+    """网页型收藏取原文(get_media_info → url_info.url → 抓正文),失败返回 None"""
+    try:
+        import requests
+        r = requests.post("https://ima.qq.com/openapi/wiki/v1/get_media_info",
+                          headers=_ima_headers(), json={"media_id": media_id}, timeout=15)
+        url = (((r.json() or {}).get("data") or {}).get("url_info") or {}).get("url")
+        if not url:
+            return None
+        rr = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if not rr.encoding or rr.encoding.lower() in ("iso-8859-1", "latin-1"):
+            rr.encoding = rr.apparent_encoding       # 防 UTF-8 被按 Latin-1 解成乱码
+        rr.raise_for_status()
+        text = re.sub(r"(?is)<(script|style).*?</\1>", " ", rr.text)
+        text = re.sub(r"<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", text)[:1500]
+    except Exception as e:
+        log.warning("ima 原文获取失败 %s: %s" % (media_id, e))
+        return None
 
 def kb_context(question):
     """知识库检索(轻量RAG):扫 kb/ 下 md/txt 的段落,按问题关键词重合度取最优段。
@@ -390,7 +496,18 @@ def compose_reply(info):
               "\n最近对话:\n" + history +
               "\n\n请以「我」的身份回复对方最后一条消息。只输出回复正文,不要任何解释、引号或表情符号堆砌。")
     if chat in CFG.get("kb_chats", []):
-        kb = kb_context(last_them or history[-200:])
+        q = (last_them or history[-200:])
+        kb_parts = []
+        for h in ima_search(q)[:3]:                      # ima OpenAPI 优先
+            line = "《%s》%s" % (h["title"], h["highlight"])
+            if len(kb_parts) < 2 and h.get("media_id"):  # 最多取2篇原文,控延迟
+                text = ima_media_text(h["media_id"])
+                if text:
+                    line += " 正文:" + text
+            kb_parts.append(line)
+        if not kb_parts:
+            kb_parts.append(kb_context(q))               # 文件检索兜底
+        kb = "\n".join(p for p in kb_parts if p)
         if kb:
             prompt += "\n\n知识库参考(「AI教育杨老师」知识库,回答以下列内容为准,没有的如实说需要查证):\n" + kb
     reply = think(prompt).strip().strip('"')
