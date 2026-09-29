@@ -225,7 +225,8 @@ def header_matches(header, name):
 
 def open_chat_via_search(name):
     c = CFG["coords"]
-    press("Escape", 0.3)                       # 关掉可能残留的下拉
+    # 注意:此处绝不能按 Escape——实测按 Esc 会打断搜索交互并让渲染崩成透明壳,
+    # 进而被自愈逻辑误判死亡而重启进程,毁掉登录会话(坑#18)。
     click(*c["search_box"])
     press("ctrl+a", 0.2)
     paste(name)
