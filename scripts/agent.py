@@ -481,7 +481,7 @@ def main():
                     handle_trigger(fresh, img)
                 for s in slots:
                     red_state[s] = 1
-                for s in [k for k in red_state if k not in slots]:
+                for k in [s for s in red_state if s not in slots]:
                     red_state[k] = 0
                 prev = cur
             elif prev is None:
