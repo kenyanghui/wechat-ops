@@ -1,7 +1,7 @@
 # 本仓库运行制度:Loong Workflow 实例
 
 > 本项目的一切变更走工单迭代。制度源:Loong Workflow(语料库部署于 Loong Gitea)。
-> 工单板:https://eightarms.net/kenyang/wechat-ops/issues
+> 工单板:http://39.108.95.179:3000/kenyang/wechat-ops/issues
 
 ## 路由表(什么改动走什么流程)
 
